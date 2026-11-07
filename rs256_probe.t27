@@ -186,4 +186,5 @@ pub fn main() -> void {
     const valid : bool = check_rsa() and check_claims();
     msg0(pool, sel("drain"));
     if (!valid) { exit_code(1); }
+    exit_code(0);
 }
