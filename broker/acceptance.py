@@ -173,6 +173,7 @@ class UpstreamHandler(BaseHTTPRequestHandler):
             "expired": {"exp": now - 10},
             "malformed": {"sub": "bad subject"},
             "collision": {"sub": "981234567890"},
+            "invalid_email": {"sub": "985555555555", "email": "not-an-email"},
         }
         claims.update(overrides.get(mode, {}))
         if mode == "no_display":
@@ -282,15 +283,35 @@ def require_identity(claims, *, username):
     assert claims["telegram_name"] == "Fixture Person"
     assert claims["telegram_username"] == username
 
-def admin_add_conflicting_user():
+def admin_headers():
     token = json_response(BROKER + "/realms/master/protocol/openid-connect/token", {
         "grant_type": "password", "client_id": "admin-cli", "username": "synthetic-admin",
         "password": "synthetic-admin-password",
     })["access_token"]
+    return {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+
+def configure_user_profile():
+    endpoint = BROKER + f"/admin/realms/{REALM}/users/profile"
+    headers = admin_headers()
+    policy = json.loads((ROOT / "user-profile-policy.json").read_text())
+    profile = json_response(endpoint, headers=headers)
+    optional = set(policy["optionalAttributes"])
+    assert optional <= {a["name"] for a in profile["attributes"]}
+    for attribute in profile["attributes"]:
+        if attribute["name"] in optional:
+            attribute.pop("required", None)
+    with request(endpoint, data=json.dumps(profile).encode(), headers=headers, method="PUT") as response:
+        assert response.status in (200, 204)
+    saved = json_response(endpoint, headers=headers)
+    attrs = {a["name"]: a for a in saved["attributes"]}
+    assert all(not attrs[name].get("required") for name in optional)
+    assert saved == profile, "realm changed more profile settings than requested"
+    print("PASS dedicated realm profile policy read back, existing validators preserved", flush=True)
+
+def admin_add_conflicting_user():
+    headers = admin_headers()
     body = json.dumps({"username": "telegram.981234567890", "enabled": True}).encode()
-    with request(BROKER + f"/admin/realms/{REALM}/users", data=body, method="POST", headers={
-        "Authorization": "Bearer " + token, "Content-Type": "application/json",
-    }) as response:
+    with request(BROKER + f"/admin/realms/{REALM}/users", data=body, method="POST", headers=headers) as response:
         assert response.status == 201
 
 def run(private_key, certificate, tls_key):
@@ -305,6 +326,7 @@ def run(private_key, certificate, tls_key):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         wait_for_broker()
+        configure_user_profile()
         cookies = CookieJar()
         first = authorize(fixture, cookies)
         require_identity(first, username="fixture_initial")
@@ -332,6 +354,9 @@ def run(private_key, certificate, tls_key):
             result = authorize(fixture, cookies)
             assert result is None or "telegram_sub" not in result, f"emitted invalid upstream subject: {mode}"
             print(f"PASS invalid subject not emitted: {mode}", flush=True)
+        fixture.mode = "invalid_email"
+        assert authorize(fixture, cookies) is None, "invalid supplied email was accepted"
+        print("PASS supplied invalid profile field still rejected", flush=True)
         admin_add_conflicting_user()
         fixture.mode = "collision"
         assert authorize(fixture, cookies) is None, "linked existing username"

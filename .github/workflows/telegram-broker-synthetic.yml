@@ -20,5 +20,5 @@ jobs:
         run: |
           set -euo pipefail
           git rev-parse HEAD
-          sha256sum broker/{acceptance.py,run.sh,realm.template.json,images.lock}
+          sha256sum broker/{acceptance.py,run.sh,realm.template.json,images.lock,user-profile-policy.json}
           bash broker/run.sh

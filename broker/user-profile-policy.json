@@ -1,0 +1,3 @@
+{
+  "optionalAttributes": ["email", "firstName", "lastName"]
+}
