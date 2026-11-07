@@ -1,0 +1,189 @@
+// SPDX-License-Identifier: Apache-2.0
+// Standalone feasibility fixture, with no application profile or network access.
+module Rs256Probe;
+
+fn symbol(handle: u64, name: []const u8) -> u64 { return @extern("dlsym"); }
+fn copy(out: []u64, address: u64, length: usize) -> u64 { return @extern("memcpy"); }
+fn env(name: []const u8) -> u64 { return @extern("getenv"); }
+fn length(s: u64) -> usize { return @extern("strlen"); }
+fn str(a: u64, b: u64, n: usize, enc: u32, external: bool) -> u64 { return @extern("CFStringCreateWithBytes"); }
+fn data(a: u64, b: u64, n: usize) -> u64 { return @extern("CFDataCreate"); }
+fn equal(a: u64, b: u64) -> bool { return @extern("CFEqual"); }
+fn release(a: u64) -> void { @extern("CFRelease"); }
+fn dict(a: u64, k: [4]u64, v: [4]u64, n: i64, kc: u64, vc: u64) -> u64 { return @extern("CFDictionaryCreate"); }
+fn key_from(data: u64, attrs: u64, error: u64) -> u64 { return @extern("SecKeyCreateWithData"); }
+fn verify(key: u64, algorithm: u64, message: u64, signature: u64, error: u64) -> u32 { return @extern("SecKeyVerifySignature"); }
+fn exit_code(code: i32) -> void { @extern("exit"); }
+fn objc_class(n: []const u8) -> u64 { return @extern("objc_getClass"); }
+fn sel(n: []const u8) -> u64 { return @extern("sel_registerName"); }
+fn msg0(o: u64, s: u64) -> u64 { return @extern("objc_msgSend"); }
+fn msg2(o: u64, s: u64, x: u64, y: u64) -> u64 { return @extern("objc_msgSend"); }
+fn msg3(o: u64, s: u64, x: u64, y: u64, z: u64) -> u64 { return @extern("objc_msgSend"); }
+
+const RTLD_DEFAULT : u64 = 18446744073709551614;
+
+fn constant(name: []const u8) -> u64 {
+    const address : u64 = symbol(RTLD_DEFAULT, name);
+    if (address == 0) { return 0; }
+    var result : [1]u64 = undefined;
+    result[0] = 0;
+    copy(result[0..1], address, 8);
+    return result[0];
+}
+
+fn env_string(name: []const u8) -> u64 {
+    const p : u64 = env(name);
+    if (p == 0) { return 0; }
+    return str(0, p, length(p), 134217984, false);
+}
+
+fn env_base64(name: []const u8) -> u64 {
+    const value : u64 = env_string(name);
+    if (value == 0) { return 0; }
+    const instance : u64 = msg0(objc_class("NSData"), sel("alloc"));
+    const decoded : u64 = msg2(instance, sel("initWithBase64EncodedString:options:"), value, 0);
+    release(value);
+    return decoded;
+}
+
+fn check_rsa() -> bool {
+    const raw : u64 = env_base64("OIDC_PUBLIC_DER");
+    const sig : u64 = env_base64("OIDC_SIGNATURE");
+    const p : u64 = env("OIDC_SIGNING_INPUT");
+    if (raw == 0 or sig == 0 or p == 0) { return false; }
+    const n : usize = length(p);
+    if (n == 0 or n > 16385) { return false; }
+    const message : u64 = data(0, p, n);
+    var names : [4]u64 = undefined;
+    var values : [4]u64 = undefined;
+    names[0] = constant("kSecAttrKeyType");
+    names[1] = constant("kSecAttrKeyClass");
+    names[2] = 0;
+    names[3] = 0;
+    values[0] = constant("kSecAttrKeyTypeRSA");
+    values[1] = constant("kSecAttrKeyClassPublic");
+    values[2] = 0;
+    values[3] = 0;
+    const alg : u64 = constant("kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256");
+    if (names[0] == 0 or names[1] == 0 or values[0] == 0 or values[1] == 0 or alg == 0) { return false; }
+    const attrs : u64 = dict(0, names, values, 2, symbol(RTLD_DEFAULT, "kCFTypeDictionaryKeyCallBacks"), symbol(RTLD_DEFAULT, "kCFTypeDictionaryValueCallBacks"));
+    if (attrs == 0 or message == 0) { return false; }
+    const key : u64 = key_from(raw, attrs, 0);
+    if (key == 0) { return false; }
+    const valid : bool = (verify(key, alg, message, sig, 0) & 255) != 0;
+    release(key);
+    release(attrs);
+    release(message);
+    release(sig);
+    release(raw);
+    return valid;
+}
+
+fn msg1(o: u64, s: u64, x: u64) -> u64 { return @extern("objc_msgSend"); }
+fn literal(a: u64, b: []const u8, n: usize, enc: u32, external: bool) -> u64 { return @extern("CFStringCreateWithBytes"); }
+fn type_id(value: u64) -> u64 { return @extern("CFGetTypeID"); }
+fn string_id() -> u64 { return @extern("CFStringGetTypeID"); }
+fn number_id() -> u64 { return @extern("CFNumberGetTypeID"); }
+fn array_id() -> u64 { return @extern("CFArrayGetTypeID"); }
+fn dictionary_id() -> u64 { return @extern("CFDictionaryGetTypeID"); }
+fn float_number(value: u64) -> bool { return @extern("CFNumberIsFloatType"); }
+
+fn text(bytes: []const u8) -> u64 {
+    return literal(0, bytes, bytes.len, 134217984, false);
+}
+
+fn field(object: u64, name: []const u8) -> u64 {
+    const k : u64 = text(name);
+    const value : u64 = msg1(object, sel("objectForKey:"), k);
+    release(k);
+    return value;
+}
+
+fn is_string(value: u64, expected: []const u8) -> bool {
+    if (value == 0 or type_id(value) != string_id()) { return false; }
+    const target : u64 = text(expected);
+    const ok : bool = equal(value, target);
+    release(target);
+    return ok;
+}
+
+fn base64url_segment(segment: u64, n: u64) -> bool {
+    if (n == 0 or n > 8192 or n % 4 == 1) { return false; }
+    const character : u64 = sel("characterAtIndex:");
+    var i : u64 = 0;
+    while (i < n) {
+        const c : u64 = msg1(segment, character, i) & 65535;
+        if (!((c >= 65 and c <= 90) or (c >= 97 and c <= 122) or
+              (c >= 48 and c <= 57) or c == 45 or c == 95)) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn token_json(segment: u64) -> u64 {
+    const n : u64 = msg0(segment, sel("length"));
+    if (!base64url_segment(segment, n)) { return 0; }
+    const minus : u64 = text("-");
+    const plus : u64 = text("+");
+    const underscore : u64 = text("_");
+    const slash : u64 = text("/");
+    var encoded : u64 = msg2(segment, sel("stringByReplacingOccurrencesOfString:withString:"), minus, plus);
+    encoded = msg2(encoded, sel("stringByReplacingOccurrencesOfString:withString:"), underscore, slash);
+    release(minus);
+    release(plus);
+    release(underscore);
+    release(slash);
+    const residue : u64 = n % 4;
+    if (residue != 0) {
+        var pad : u64 = text("=");
+        if (residue == 2) { release(pad); pad = text("=="); }
+        encoded = msg1(encoded, sel("stringByAppendingString:"), pad);
+        release(pad);
+    }
+    const allocated : u64 = msg0(objc_class("NSData"), sel("alloc"));
+    const raw : u64 = msg2(allocated, sel("initWithBase64EncodedString:options:"), encoded, 0);
+    if (raw == 0) { return 0; }
+    const parsed : u64 = msg3(objc_class("NSJSONSerialization"), sel("JSONObjectWithData:options:error:"), raw, 0, 0);
+    release(raw);
+    if (parsed == 0 or type_id(parsed) != dictionary_id()) { return 0; }
+    return parsed;
+}
+
+fn integer(value: u64) -> i64 {
+    if (value == 0 or type_id(value) != number_id() or float_number(value)) { return 0; }
+    return @intCast(msg0(value, sel("longLongValue")));
+}
+
+fn expected_audience(value: u64) -> bool {
+    if (is_string(value, "native-client")) { return true; }
+    if (value == 0 or type_id(value) != array_id() or msg0(value, sel("count")) != 1) { return false; }
+    return is_string(msg1(value, sel("objectAtIndex:"), 0), "native-client");
+}
+
+fn check_claims() -> bool {
+    const compact : u64 = env_string("OIDC_SIGNING_INPUT");
+    if (compact == 0) { return false; }
+    const dot : u64 = text(".");
+    const parts : u64 = msg1(compact, sel("componentsSeparatedByString:"), dot);
+    release(dot);
+    release(compact);
+    if (msg0(parts, sel("count")) != 2) { return false; }
+    const header : u64 = token_json(msg1(parts, sel("objectAtIndex:"), 0));
+    const claims : u64 = token_json(msg1(parts, sel("objectAtIndex:"), 1));
+    if (header == 0 or claims == 0) { return false; }
+    if (!is_string(field(header, "alg"), "RS256") or !is_string(field(header, "kid"), "fixture-key") or field(header, "crit") != 0) { return false; }
+    if (!is_string(field(claims, "iss"), "https://issuer.invalid") or !expected_audience(field(claims, "aud"))) { return false; }
+    const azp : u64 = field(claims, "azp");
+    if (azp != 0 and !is_string(azp, "native-client")) { return false; }
+    if (!is_string(field(claims, "nonce"), "fixture-nonce")) { return false; }
+    const iat : i64 = integer(field(claims, "iat"));
+    const exp : i64 = integer(field(claims, "exp"));
+    return iat >= 1699999730 and iat <= 1700000030 and exp > 1700000030 and exp > iat;
+}
+
+pub fn main() -> void {
+    const pool : u64 = msg0(objc_class("NSAutoreleasePool"), sel("new"));
+    const valid : bool = check_rsa() and check_claims();
+    msg0(pool, sel("drain"));
+    if (!valid) { exit_code(1); }
+}

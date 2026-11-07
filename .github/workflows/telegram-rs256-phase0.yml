@@ -1,0 +1,37 @@
+name: Telegram RS256 native feasibility
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-rs256:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - name: Check out the exact fixture revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build and test synthetic fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)-$(uname -m)" = Darwin-arm64
+          git rev-parse HEAD
+          shasum -a 256 rs256_probe.t27 verify-fixtures.py
+          compiler="$RUNNER_TEMP/t27b-darwin-arm64"
+          curl --fail --location --proto '=https' --max-time 120 --retry 2             --output "$compiler"             https://github.com/Trinity-S-AI-DNA/t27/releases/download/t27os-v0.2.0-b7645/t27b-darwin-arm64
+          echo "4ccf56064689059d990b30074fd8c7df61fd7013a9c2e1734c50003befc1bd5a  $compiler" | shasum -a 256 -c -
+          chmod 0700 "$compiler"
+          "$compiler" build rs256_probe.t27 -o "$RUNNER_TEMP/rs256_probe.o" --macho
+          ld -arch arm64 -platform_version macos 11.0 "$(xcrun --show-sdk-version)" \
+            -syslibroot "$(xcrun --show-sdk-path)" -e _main -lSystem -lobjc \
+            -framework Security -framework CoreFoundation -framework Foundation \
+            -o "$RUNNER_TEMP/rs256_probe" "$RUNNER_TEMP/rs256_probe.o"
+          nm -u "$RUNNER_TEMP/rs256_probe.o" | grep -E 'SecKey(CreateWithData|VerifySignature)'
+          python3 verify-fixtures.py "$RUNNER_TEMP/rs256_probe"
+          git rev-parse HEAD
+          shasum -a 256 rs256_probe.t27 verify-fixtures.py "$RUNNER_TEMP/rs256_probe"

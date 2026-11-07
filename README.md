@@ -1,0 +1,5 @@
+# Optional cloud feasibility check
+
+This directory is the proposed root of a separately approved GitHub scratch repository. It contains synthetic inputs only. Install the workflow on that repository's default branch for the manual `workflow_dispatch` event to be available. The workflow has no repository secrets, custom actions, account or bot integration, release job, or access to local profiles. It downloads one public compiler asset and pins its SHA-256.
+
+Approval inputs are scratch repository name and visibility, authorization to publish these fixture sources there, authorization for one standard arm64 macOS job capped at eight minutes, and verification of applicable usage allowance or spend limits. A successful run must report the exact checkout revision, the verified compiler digest, the two linked Security symbols, and the exit status of all 22 fixture cases. Save the run URL, log, and digest. Runtime scope is platform RSA and signed local claims. JWKS retrieval, duplicate JSON handling, loopback, Keycloak, or Telegram behavior require separate acceptance.
