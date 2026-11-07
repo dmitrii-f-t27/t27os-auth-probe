@@ -1,0 +1,24 @@
+name: Telegram broker synthetic acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-broker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Check out the exact fixture revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Exercise pinned Keycloak and PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          sha256sum broker/{acceptance.py,run.sh,realm.template.json,images.lock}
+          bash broker/run.sh
