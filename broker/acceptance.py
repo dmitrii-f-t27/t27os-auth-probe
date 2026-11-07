@@ -174,6 +174,10 @@ class UpstreamHandler(BaseHTTPRequestHandler):
             "malformed": {"sub": "bad subject"},
             "collision": {"sub": "981234567890"},
             "invalid_email": {"sub": "985555555555", "email": "not-an-email"},
+            "empty": {"sub": ""},
+            "null": {"sub": None},
+            "overlong": {"sub": "x" * 256},
+            "other_account": {"sub": "900000000002"},
         }
         claims.update(overrides.get(mode, {}))
         if mode == "no_display":
@@ -182,7 +186,7 @@ class UpstreamHandler(BaseHTTPRequestHandler):
         if mode == "absent":
             claims.pop("sub")
         if mode == "wrong_type":
-            claims["sub"] = 123456789
+            claims["sub"] = 908172635451
         conflicting = claims | {"sub": "999999999999"}
         self.emit_json({
             "token_type": "Bearer", "expires_in": 90,
@@ -328,6 +332,11 @@ def run(private_key, certificate, tls_key):
         wait_for_broker()
         configure_user_profile()
         cookies = CookieJar()
+        failures = []
+        def check(condition, label):
+            print(("PASS " if condition else "FAIL ") + label, flush=True)
+            if not condition:
+                failures.append(label)
         first = authorize(fixture, cookies)
         require_identity(first, username="fixture_initial")
         print("PASS first callback, ID-token-only upstream subject and provider", flush=True)
@@ -338,29 +347,40 @@ def run(private_key, certificate, tls_key):
         print("PASS new upstream callback with prior SSO, changed display and stable subject", flush=True)
         fixture.mode = "no_display"
         no_display = authorize(fixture, cookies)
-        assert no_display is not None and no_display["telegram_sub"] == "908172635451"
-        assert not {"telegram_name", "telegram_username"} & no_display.keys()
+        check(no_display is not None and no_display.get("telegram_sub") == "908172635451"
+              and not {"telegram_name", "telegram_username"} & no_display.keys(),
+              "missing display does not retain stale notes, no refresh token")
         fixture.mode = "valid"
-        print("PASS missing display does not retain stale notes, no refresh token", flush=True)
         for args in ({"path": "/wrong"}, {"host": "localhost"}, {"challenge": False}):
             authorize(fixture, cookies, expect_callback=False, **args)
         print("PASS exact loopback path, IP and S256 enforcement", flush=True)
         for mode in ("issuer", "audience", "nonce", "expired", "signature"):
             fixture.mode = mode
-            assert authorize(fixture, cookies) is None, f"accepted wrong {mode}"
-            print(f"PASS rejected upstream {mode}", flush=True)
-        for mode in ("absent", "wrong_type", "malformed"):
+            check(authorize(fixture, cookies) is None, f"rejected upstream {mode}")
+        for mode in ("absent", "empty", "null", "wrong_type", "overlong", "malformed"):
+            fixture.mode = "valid"
+            current = authorize(fixture, cookies)
+            require_identity(current, username="fixture_changed")
             fixture.mode = mode
             result = authorize(fixture, cookies)
-            assert result is None or "telegram_sub" not in result, f"emitted invalid upstream subject: {mode}"
-            print(f"PASS invalid subject not emitted: {mode}", flush=True)
+            issued = result is not None
+            subject = result.get("telegram_sub") if issued else None
+            print(f"fixture invalid subject mode={mode} code_issued={issued} "
+                  f"claim_present={issued and 'telegram_sub' in result} prior_subject={subject == current['telegram_sub']}",
+                  flush=True)
+            check(not issued or "telegram_sub" not in result, f"invalid subject not emitted: {mode}")
+        fixture.mode = "other_account"
+        other_same_browser = authorize(fixture, cookies)
+        check(other_same_browser is None or other_same_browser.get("telegram_sub") == "900000000002",
+              "a different account never emits the previous subject in same browser")
+        other_clean_browser = authorize(fixture, CookieJar())
+        check(other_clean_browser is not None and other_clean_browser.get("telegram_sub") == "900000000002",
+              "different account succeeds with its own subject in fresh browser")
         fixture.mode = "invalid_email"
-        assert authorize(fixture, cookies) is None, "invalid supplied email was accepted"
-        print("PASS supplied invalid profile field still rejected", flush=True)
+        check(authorize(fixture, cookies) is None, "supplied invalid profile field still rejected")
         admin_add_conflicting_user()
         fixture.mode = "collision"
-        assert authorize(fixture, cookies) is None, "linked existing username"
-        print("PASS refused existing username collision", flush=True)
+        check(authorize(fixture, cookies) is None, "refused existing username collision")
         fixture.mode = "valid"
         prior_exchange = fixture.last_exchange
         subprocess.run(["docker", "restart", "t27-auth-keycloak"], check=True, stdout=subprocess.DEVNULL)
@@ -371,6 +391,8 @@ def run(private_key, certificate, tls_key):
         assert first["sub"] == reopened["sub"]
         assert fixture.userinfo_calls == 0
         print("PASS broker restart, previous browser cookies, stable subject, no UserInfo, replay rejected", flush=True)
+        if failures:
+            raise AssertionError("failed broker cases: " + "; ".join(failures))
     finally:
         server.shutdown()
 
