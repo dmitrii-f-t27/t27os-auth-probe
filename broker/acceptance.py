@@ -4,6 +4,7 @@ import hashlib
 from http.cookiejar import CookieJar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import re
 from pathlib import Path
 import secrets
 import ssl
@@ -214,10 +215,19 @@ def authorize(fixture, cookies, *, port=19001, path="/t27os-telegram-callback", 
         params.update(code_challenge=b64(hashlib.sha256(PKCE.encode()).digest()), code_challenge_method="S256")
     before = fixture.auth_calls
     try:
-        with request(ISSUER + "/protocol/openid-connect/auth?" + urlencode(params), opener=opener):
-            pass
+        response = request(ISSUER + "/protocol/openid-connect/auth?" + urlencode(params), opener=opener)
     except HTTPError as error:
-        error.close()
+        response = error
+    with response:
+        status = response.status
+        path_only = urlsplit(response.url).path
+        page = response.read(16384).decode(errors="replace") if capture.result is None else ""
+    if capture.result is None:
+        title = re.search(r"<title>\s*([^<]{1,100})</title>", page)
+        markers = [marker for marker in ("UPDATE_PROFILE", "UPDATE_PASSWORD", "login-actions/required-action",
+                   "first-broker-login", "invalid", "error") if marker in page]
+        print(f"fixture authorize status={status} path={path_only} title={title.group(1) if title else '-'} "
+              f"markers={markers} upstream_auth={fixture.auth_calls} upstream_token={fixture.token_calls}", flush=True)
     result = capture.result or {}
     if not expect_callback:
         assert "code" not in result
@@ -225,6 +235,9 @@ def authorize(fixture, cookies, *, port=19001, path="/t27os-telegram-callback", 
         return None
     assert fixture.auth_calls == before + 1, "fresh upstream authorization callback missing"
     if "code" not in result:
+        allowed_errors = {"access_denied", "invalid_request", "server_error", "interaction_required", "login_required"}
+        error = result.get("error", [""])[0]
+        print("fixture callback error=" + (error if error in allowed_errors else "none-or-other"), flush=True)
         return None
     assert result.get("state") == [state]
     exchange = {
