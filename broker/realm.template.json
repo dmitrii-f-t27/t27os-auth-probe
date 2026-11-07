@@ -60,34 +60,6 @@
             "userinfo.token.claim": "false",
             "introspection.token.claim": "false"
           }
-        },
-        {
-          "name": "Optional Telegram display name",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-usersessionmodel-note-mapper",
-          "config": {
-            "user.session.note": "name",
-            "claim.name": "telegram_name",
-            "jsonType.label": "String",
-            "id.token.claim": "true",
-            "access.token.claim": "false",
-            "userinfo.token.claim": "false",
-            "introspection.token.claim": "false"
-          }
-        },
-        {
-          "name": "Optional Telegram display preferred_username",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-usersessionmodel-note-mapper",
-          "config": {
-            "user.session.note": "preferred_username",
-            "claim.name": "telegram_username",
-            "jsonType.label": "String",
-            "id.token.claim": "true",
-            "access.token.claim": "false",
-            "userinfo.token.claim": "false",
-            "introspection.token.claim": "false"
-          }
         }
       ]
     }
@@ -113,7 +85,7 @@
         "disableUserInfo": "true",
         "disableNonce": "false",
         "clientAuthMethod": "client_secret_basic",
-        "defaultScope": "openid profile",
+        "defaultScope": "openid",
         "pkceEnabled": "true",
         "pkceMethod": "S256",
         "syncMode": "FORCE",
@@ -130,7 +102,7 @@
       "identityProviderMapper": "oidc-user-session-note-idp-mapper",
       "config": {
         "syncMode": "FORCE",
-        "claims": "[{\"key\":\"sub\",\"value\":\"^[!-~]{1,255}$\"},{\"key\":\"name\",\"value\":\"^[^\\\\p{Cc}\\\\p{Cf}]{1,80}$\"},{\"key\":\"preferred_username\",\"value\":\"^[A-Za-z0-9_]{1,64}$\"}]",
+        "claims": "[{\"key\":\"sub\",\"value\":\"^[1-9][0-9]{0,254}$\"}]",
         "are.claim.values.regex": "true"
       }
     },
