@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import secrets
+import ssl
 import subprocess
 import sys
 import threading
@@ -13,12 +14,13 @@ import time
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import (
-    HTTPCookieProcessor, HTTPRedirectHandler, Request, build_opener, urlopen,
+    HTTPCookieProcessor, HTTPRedirectHandler, HTTPSHandler, Request, build_opener, urlopen,
 )
 
 ROOT = Path(__file__).resolve().parent
-UPSTREAM = "http://127.0.0.1:18081"
-BROKER = "http://127.0.0.1:18080"
+UPSTREAM = "https://127.0.0.1:18081"
+BROKER = "https://127.0.0.1:18080"
+SSL_CONTEXT = None
 REALM = "t27os-telegram"
 ISSUER = f"{BROKER}/realms/{REALM}"
 UPSTREAM_CLIENT = "synthetic-upstream"
@@ -37,7 +39,9 @@ def request(url, form=None, *, opener=None, headers=None, data=None, method=None
     if form is not None:
         data = urlencode(form).encode()
     req = Request(url, data=data, headers=headers or {}, method=method)
-    return (opener.open if opener else urlopen)(req, timeout=10)
+    if opener:
+        return opener.open(req, timeout=10)
+    return urlopen(req, timeout=10, context=SSL_CONTEXT)
 
 def json_response(*args, **kwargs):
     with request(*args, **kwargs) as response:
@@ -49,7 +53,6 @@ def decoded_claims(token):
 
 def fixture_realm(output):
     realm = json.loads((ROOT / "realm.template.json").read_text())
-    realm["sslRequired"] = "none"
     provider = realm["identityProviders"][0]
     provider["enabled"] = True
     provider["config"].update(
@@ -171,6 +174,9 @@ class UpstreamHandler(BaseHTTPRequestHandler):
             "collision": {"sub": "981234567890"},
         }
         claims.update(overrides.get(mode, {}))
+        if mode == "no_display":
+            claims.pop("name")
+            claims.pop("preferred_username")
         if mode == "absent":
             claims.pop("sub")
         if mode == "wrong_type":
@@ -197,7 +203,7 @@ def authorize(fixture, cookies, *, port=19001, path="/t27os-telegram-callback", 
               expect_callback=True, challenge=True):
     callback = f"http://{host}:{port}{path}"
     capture = CaptureCallback(callback)
-    opener = build_opener(HTTPCookieProcessor(cookies), capture)
+    opener = build_opener(HTTPCookieProcessor(cookies), HTTPSHandler(context=SSL_CONTEXT), capture)
     state = secrets.token_urlsafe(24)
     nonce = secrets.token_urlsafe(24)
     params = {
@@ -226,17 +232,22 @@ def authorize(fixture, cookies, *, port=19001, path="/t27os-telegram-callback", 
         "redirect_uri": callback, "code": result["code"][0], "code_verifier": PKCE,
     }
     token = json_response(ISSUER + "/protocol/openid-connect/token", exchange)
+    assert "refresh_token" not in token
     claims = decoded_claims(token["id_token"])
     assert claims["iss"] == ISSUER and claims["aud"] == NATIVE_CLIENT and claims["nonce"] == nonce
     access = decoded_claims(token["access_token"])
     assert not {"telegram_sub", "identity_provider", "telegram_name", "telegram_username"} & access.keys()
+    reject_replay(exchange)
+    fixture.last_exchange = exchange
+    return claims
+
+def reject_replay(exchange):
     try:
         json_response(ISSUER + "/protocol/openid-connect/token", exchange)
     except HTTPError as error:
         assert error.code == 400
     else:
         raise AssertionError("native authorization code replay succeeded")
-    return claims
 
 def wait_for_broker():
     deadline = time.monotonic() + 100
@@ -269,8 +280,13 @@ def admin_add_conflicting_user():
     }) as response:
         assert response.status == 201
 
-def run(private_key):
+def run(private_key, certificate, tls_key):
+    global SSL_CONTEXT
+    SSL_CONTEXT = ssl.create_default_context(cafile=certificate)
     server = ThreadingHTTPServer(("127.0.0.1", 18081), UpstreamHandler)
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(certificate, tls_key)
+    server.socket = server_context.wrap_socket(server.socket, server_side=True)
     fixture = Fixture(private_key)
     server.fixture = fixture
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -285,6 +301,12 @@ def run(private_key):
         require_identity(returning, username="fixture_changed")
         assert first["sub"] == returning["sub"]
         print("PASS new upstream callback with prior SSO, changed display and stable subject", flush=True)
+        fixture.mode = "no_display"
+        no_display = authorize(fixture, cookies)
+        assert no_display is not None and no_display["telegram_sub"] == "908172635451"
+        assert not {"telegram_name", "telegram_username"} & no_display.keys()
+        fixture.mode = "valid"
+        print("PASS missing display does not retain stale notes, no refresh token", flush=True)
         for args in ({"path": "/wrong"}, {"host": "localhost"}, {"challenge": False}):
             authorize(fixture, cookies, expect_callback=False, **args)
         print("PASS exact loopback path, IP and S256 enforcement", flush=True)
@@ -302,13 +324,15 @@ def run(private_key):
         assert authorize(fixture, cookies) is None, "linked existing username"
         print("PASS refused existing username collision", flush=True)
         fixture.mode = "valid"
+        prior_exchange = fixture.last_exchange
         subprocess.run(["docker", "restart", "t27-auth-keycloak"], check=True, stdout=subprocess.DEVNULL)
         wait_for_broker()
+        reject_replay(prior_exchange)
         reopened = authorize(fixture, cookies, port=19003)
         require_identity(reopened, username="fixture_changed")
         assert first["sub"] == reopened["sub"]
         assert fixture.userinfo_calls == 0
-        print("PASS broker restart, previous browser cookies, stable subject, no UserInfo", flush=True)
+        print("PASS broker restart, previous browser cookies, stable subject, no UserInfo, replay rejected", flush=True)
     finally:
         server.shutdown()
 
@@ -316,6 +340,6 @@ if __name__ == "__main__":
     if sys.argv[1] == "render":
         fixture_realm(sys.argv[2])
     elif sys.argv[1] == "run":
-        run(sys.argv[2])
+        run(sys.argv[2], sys.argv[3], sys.argv[4])
     else:
         raise SystemExit(2)
